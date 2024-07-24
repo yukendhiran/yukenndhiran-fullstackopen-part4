@@ -4,67 +4,77 @@ const supertest = require("supertest");
 const app = require("../app");
 const assert = require("node:assert");
 const api = supertest(app);
-
+const bcrypt = require("bcrypt");
+const User = require("../models/user");
 const Blog = require("../models/blog");
+
+const helper = require("../utils/list_helper");
 
 const initialBlogs = [
   {
-    id: "5a422a851b54a676234d17f7",
     title: "React patterns",
     author: "Michael Chan",
     url: "https://reactpatterns.com/",
     likes: 7,
-    __v: 0,
   },
   {
-    id: "5a422aa71b54a676234d17f8",
     title: "Go To Statement Considered Harmful",
     author: "Edsger W. Dijkstra",
     url: "http://www.u.arizona.edu/~rubinson/copyright_violations/Go_To_Considered_Harmful.html",
     likes: 5,
-    __v: 0,
   },
   {
-    id: "5a422b3a1b54a676234d17f9",
     title: "Canonical string reduction",
     author: "Edsger W. Dijkstra",
     url: "http://www.cs.utexas.edu/~EWD/transcriptions/EWD08xx/EWD808.html",
     likes: 12,
-    __v: 0,
   },
   {
-    id: "5a422b891b54a676234d17fa",
     title: "First class tests",
     author: "Robert C. Martin",
     url: "http://blog.cleancoder.com/uncle-bob/2017/05/05/TestDefinitions.htmll",
     likes: 10,
-    __v: 0,
   },
   {
-    id: "5a422ba71b54a676234d17fb",
     title: "TDD harms architecture",
     author: "Robert C. Martin",
     url: "http://blog.cleancoder.com/uncle-bob/2017/03/03/TDD-Harms-Architecture.html",
     likes: 0,
-    __v: 0,
   },
   {
-    id: "5a422bc61b54a676234d17fc",
     title: "Type wars",
     author: "Robert C. Martin",
     url: "http://blog.cleancoder.com/uncle-bob/2016/05/01/TypeWars.html",
     likes: 2,
-    __v: 0,
   },
 ];
-describe("related to get", () => {
-  beforeEach(async () => {
-    await Blog.deleteMany({});
-    const blogObjects = initialBlogs.map((blog) => new Blog(blog));
-    const promiseArray = blogObjects.map((blog) => blog.save());
-    await Promise.all(promiseArray);
-  });
 
+let token = "";
+
+beforeEach(async () => {
+  await User.deleteMany({});
+  await Blog.deleteMany({});
+
+  const passwordHash = await bcrypt.hash("sekret", 10);
+  const user = new User({ username: "root", passwordHash });
+  await user.save();
+
+  const loginResponse = await api
+    .post("/api/login")
+    .send({ username: "root", password: "sekret" })
+    .expect(200)
+    .expect("Content-Type", /application\/json/);
+
+  token = loginResponse.body.token;
+
+  const blogObjects = initialBlogs.map(
+    (blog) => new Blog({ ...blog, user: user.id }),
+  );
+  const promiseArray = blogObjects.map((blog) => blog.save());
+  await Promise.all(promiseArray);
+});
+
+describe("related to get", () => {
   test("blogs are returned as json", async () => {
     await api
       .get("/api/blogs")
@@ -74,40 +84,34 @@ describe("related to get", () => {
 
   test("there are 6 blogs", async () => {
     const response = await api.get("/api/blogs");
-
     assert.strictEqual(response.body.length, initialBlogs.length);
   });
 
   test("unique identifier property of the blog posts is named id", async () => {
     const response = await api.get("/api/blogs");
-
     response.body.forEach((blog) => {
-      const initialBlog = initialBlogs.find((b) => b.id.toString() === blog.id);
-
-      assert.strictEqual(blog.id, initialBlog.id.toString());
+      assert.ok(blog.id);
     });
   });
 });
 
 describe("related to post", () => {
-  test("a valid blog can be added ", async () => {
+  test("a valid blog can be added", async () => {
     const newBlog = {
-      id: "5a422bc61b54a676234d12ac",
-      title: "Type wars",
-      author: "Robert C. Martin",
-      url: "http://blog.cleancoder.com/uncle-bob/2016/05/01/TypeWars.html",
+      title: "Test Blog",
+      author: "Test Author",
+      url: "http://testurl.com",
       likes: 2,
-      __v: 0,
     };
 
     await api
       .post("/api/blogs")
+      .set("Authorization", `Bearer ${token}`)
       .send(newBlog)
       .expect(201)
       .expect("Content-Type", /application\/json/);
 
     const response = await api.get("/api/blogs");
-
     assert.strictEqual(response.body.length, initialBlogs.length + 1);
   });
 
@@ -120,6 +124,7 @@ describe("related to post", () => {
 
     const response = await api
       .post("/api/blogs")
+      .set("Authorization", `Bearer ${token}`)
       .send(newBlog)
       .expect(201)
       .expect("Content-Type", /application\/json/);
@@ -128,50 +133,80 @@ describe("related to post", () => {
     assert.strictEqual(createdBlog.likes, 0);
   });
 
-  test("expect 400 , if title is missing", async () => {
+  test("expect 400 if title is missing", async () => {
     const newBlog = {
       author: "Test Author",
       url: "http://testurl.com",
     };
 
-    await api.post("/api/blogs").send(newBlog).expect(400);
+    await api
+      .post("/api/blogs")
+      .set("Authorization", `Bearer ${token}`)
+      .send(newBlog)
+      .expect(400);
   });
 
-  test("expect 400 , if url is missing", async () => {
+  test("expect 400 if url is missing", async () => {
     const newBlog = {
       title: "Test Blog",
       author: "Test Author",
     };
 
-    await api.post("/api/blogs").send(newBlog).expect(400);
+    await api
+      .post("/api/blogs")
+      .set("Authorization", `Bearer ${token}`)
+      .send(newBlog)
+      .expect(400);
   });
 });
 
 describe("related to delete", () => {
-  test("expect 204, if id is valid", async () => {
-    const validId = "5a422ba71b54a676234d17fb";
+  test("expect 204 if id is valid", async () => {
+    const blogsAtStart = await helper.blogsInDb();
+    const blogToDelete = blogsAtStart[0];
 
-    await api.delete(`/api/blogs/${validId}`).expect(204);
+    await api
+      .delete(`/api/blogs/${blogToDelete.id}`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(204);
 
-    const blogsAtEnd = await Blog.find({});
-    const ids = blogsAtEnd.map((blog) => blog.id.toString());
+    const blogsAtEnd = await helper.blogsInDb();
+    assert.strictEqual(blogsAtEnd.length, blogsAtStart.length - 1);
+  });
 
-    assert.strictEqual(ids.includes(validId), false);
+  test("expect 401 if token is missing", async () => {
+    const blogsAtStart = await helper.blogsInDb();
+    const blogToDelete = blogsAtStart[0];
+
+    await api.delete(`/api/blogs/${blogToDelete.id}`).expect(401);
+  });
+
+  test("expect 403 if token is invalid", async () => {
+    const blogsAtStart = await helper.blogsInDb();
+    const blogToDelete = blogsAtStart[0];
+
+    const anotherUserToken = await helper.getAnotherUserToken();
+
+    await api
+      .delete(`/api/blogs/${blogToDelete.id}`)
+      .set("Authorization", `Bearer ${anotherUserToken}`)
+      .expect(403);
   });
 });
 
 describe("related to update", () => {
   test("updates the likes of a blog post", async () => {
-    const validId = "5a422aa71b54a676234d17f8";
+    const blogsAtStart = await helper.blogsInDb();
+    const blogToUpdate = blogsAtStart[0];
     const newLikes = { likes: 10 };
 
-    const response = await api
-      .put(`/api/blogs/${validId}`)
+    await api
+      .put(`/api/blogs/${blogToUpdate.id}`)
       .send(newLikes)
       .expect(200)
       .expect("Content-Type", /application\/json/);
 
-    const updatedBlog = await Blog.findById(validId);
+    const updatedBlog = await Blog.findById(blogToUpdate.id);
     assert.strictEqual(updatedBlog.likes, newLikes.likes);
   });
 });
